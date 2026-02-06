@@ -1,0 +1,7 @@
+{
+  "name": "SERVER 2  APP PHOTOBOOTH V2  3.1.2 KAMERA FULL",
+  "description": "MIRROR",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
