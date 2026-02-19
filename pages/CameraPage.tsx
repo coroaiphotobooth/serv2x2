@@ -59,15 +59,15 @@ const CameraPage: React.FC<CameraPageProps> = ({
     setCameraError(null);
 
     try {
-      console.log("Starting Camera (Max Resolution/Full Frame)...");
-      const constraints: MediaStreamConstraints = { 
+      console.log("Starting Camera...");
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const constraints: MediaStreamConstraints = {
         audio: false,
-        video: { 
-          // Requesting 4K/Max to ensure we get the full sensor FOV without driver-side cropping
-          width: { ideal: 3840 }, 
-          height: { ideal: 2160 }, 
+        video: {
+          width: isMobile ? { ideal: 1080 } : { ideal: 1920 },
+          height: isMobile ? { ideal: 1920 } : { ideal: 1080 },
           facingMode: 'user'
-        } 
+        }
       };
 
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -118,66 +118,52 @@ const CameraPage: React.FC<CameraPageProps> = ({
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
 
       const rawW = video.videoWidth;
       const rawH = video.videoHeight;
-      
+
       if (rawW === 0 || rawH === 0) return;
 
-      // 1. Determine Output Size (Max 1536px)
-      const MAX_DIMENSION = 1536;
+      const MAX_DIMENSION = 1024;
       let destW, destH;
 
-      if (targetRatioValue < 1) { // Portrait Output
+      if (targetRatioValue < 1) {
           destW = Math.round(MAX_DIMENSION * targetRatioValue);
           destH = MAX_DIMENSION;
-      } else { // Landscape Output
+      } else {
           destW = MAX_DIMENSION;
           destH = Math.round(MAX_DIMENSION / targetRatioValue);
       }
 
-      // 2. Set Canvas Size
       canvas.width = destW;
       canvas.height = destH;
 
-      if (ctx) {
-         ctx.save();
-         
-         // 3. Setup Context for Rotation/Mirroring
-         // Translate to center of canvas
-         ctx.translate(destW / 2, destH / 2);
-         // Rotate context (if camera is mounted sideways)
-         ctx.rotate((cameraRotation * Math.PI) / 180);
-         // Mirror (Flip horizontally)
-         ctx.scale(isMirrored ? -1 : 1, 1); 
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      if (!ctx) return;
 
-         // 4. Calculate Draw Dimensions (Object Cover Logic)
-         // Note: If context is rotated 90deg, the "width" the video sees is actually destH
-         const isRotated = cameraRotation % 180 !== 0;
-         const canvasWidthSeenByVideo = isRotated ? destH : destW;
-         const canvasHeightSeenByVideo = isRotated ? destW : destH;
+      ctx.save();
+      ctx.translate(destW / 2, destH / 2);
+      ctx.rotate((cameraRotation * Math.PI) / 180);
+      ctx.scale(isMirrored ? -1 : 1, 1);
 
-         // Calculate scale to COVER the canvas area
-         const scale = Math.max(canvasWidthSeenByVideo / rawW, canvasHeightSeenByVideo / rawH);
-         
-         const drawW = rawW * scale;
-         const drawH = rawH * scale;
-         
-         // Center the video draw relative to the translated center
-         const offsetX = -drawW / 2;
-         const offsetY = -drawH / 2;
+      const isRotated = cameraRotation % 180 !== 0;
+      const canvasWidthSeenByVideo = isRotated ? destH : destW;
+      const canvasHeightSeenByVideo = isRotated ? destW : destH;
 
-         ctx.drawImage(video, offsetX, offsetY, drawW, drawH);
+      const scale = Math.max(canvasWidthSeenByVideo / rawW, canvasHeightSeenByVideo / rawH);
 
-         ctx.restore();
+      const drawW = rawW * scale;
+      const drawH = rawH * scale;
+      const offsetX = -drawW / 2;
+      const offsetY = -drawH / 2;
 
-         // Export as High Quality JPEG
-         const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-         stopCamera();
-         onCapture(dataUrl);
-         onGenerate();
-      }
+      ctx.drawImage(video, offsetX, offsetY, drawW, drawH);
+      ctx.restore();
+
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      stopCamera();
+      onCapture(dataUrl);
+      onGenerate();
     }
   }, [onCapture, onGenerate, cameraRotation, targetRatioValue, stopCamera, isMirrored]);
 
@@ -304,7 +290,7 @@ const CameraPage: React.FC<CameraPageProps> = ({
       </div>
 
       {/* VIEWPORT MASK CONTAINER */}
-      <div className="relative z-10 flex items-center justify-center w-full h-full max-h-screen p-4 md:p-8">
+      <div className="relative z-10 flex items-center justify-center w-full h-full max-h-screen p-4 md:p-8" style={{ contain: 'layout style paint' }}>
         
         {/* CAMERA ERROR UI */}
         {cameraError && !capturedImage && (
@@ -324,43 +310,45 @@ const CameraPage: React.FC<CameraPageProps> = ({
 
         {!capturedImage ? (
            /* PREVIEW WRAPPER */
-           <div 
+           <div
              className="relative overflow-hidden shadow-[0_0_50px_rgba(168,85,247,0.2)] border-2 border-purple-500/30 rounded-xl bg-gray-900 flex items-center justify-center"
              style={{
                 aspectRatio: cssAspectRatio,
-                // Ensure dimensions are applied based on orientation to prevent 0x0 collapse
-                height: isTall ? '100%' : 'auto',     
-                width: isTall ? 'auto' : '100%',      
+                height: isTall ? '100%' : 'auto',
+                width: isTall ? 'auto' : '100%',
                 maxHeight: '100%',
-                maxWidth: '100%'
+                maxWidth: '100%',
+                contain: 'layout style paint',
+                willChange: 'contents'
              }}
            >
               {/* VIDEO ELEMENT */}
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
                 muted
                 onLoadedMetadata={(e) => {
                     const v = e.target as HTMLVideoElement;
                     v.play().catch(console.error);
                 }}
-                className="absolute inset-0 w-full h-full object-cover"
-                style={{ 
+                className="absolute inset-0 w-full h-full object-cover will-change-transform"
+                style={{
                    transform: `rotate(${cameraRotation}deg) scaleX(${isMirrored ? -1 : 1})`,
-                   transformOrigin: 'center center'
+                   transformOrigin: 'center center',
+                   WebkitTransform: `rotate(${cameraRotation}deg) scaleX(${isMirrored ? -1 : 1})`
                 }}
               />
 
               {/* HUD / Countdown Overlay */}
-              <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center opacity-40">
+              <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center opacity-40" style={{ contain: 'layout style' }}>
                    <div className="w-1/2 h-1/3 border border-white/30 rounded-lg flex items-center justify-center">
                        <div className="w-2 h-2 bg-purple-500/50 rounded-full" />
                    </div>
               </div>
 
               {countdown && (
-                <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/40 backdrop-blur-[4px]">
+                <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/60" style={{ contain: 'layout style' }}>
                   <span className="text-[120px] md:text-[250px] font-heading text-white neon-text animate-ping italic">{countdown}</span>
                 </div>
               )}
