@@ -5,7 +5,7 @@ import { PhotoboothSettings, AspectRatio, Concept } from "../types";
 // --- OPENAI HELPER FUNCTIONS ---
 
 // 1. Prepare: Resize Fit to 512 -> Pad to Square -> Return Base64 & Crop Info
-const prepareOpenAIInput = async (base64Str: string, targetSize: number = 512): Promise<{ image: string, mask: string, cropInfo: { x: number, y: number, w: number, h: number } }> => {
+const prepareOpenAIInput = async (base64Str: string, targetSize: number = 512): Promise<{ image: string, mask: any, cropInfo: { x: number, y: number, w: number, h: number } }> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -37,18 +37,9 @@ const prepareOpenAIInput = async (base64Str: string, targetSize: number = 512): 
       ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
       const preparedImage = canvas.toDataURL('image/png');
 
-      const maskCanvas = document.createElement('canvas');
-      maskCanvas.width = targetSize;
-      maskCanvas.height = targetSize;
-      const maskCtx = maskCanvas.getContext('2d');
-      if (!maskCtx) return reject("No Mask Context");
-      
-      maskCtx.clearRect(0, 0, targetSize, targetSize);
-      const preparedMask = maskCanvas.toDataURL('image/png');
-
-      resolve({ 
-        image: preparedImage, 
-        mask: preparedMask,
+      resolve({
+        image: preparedImage,
+        mask: null,
         cropInfo: { x: offsetX, y: offsetY, w: drawW, h: drawH }
       });
     };
@@ -83,35 +74,13 @@ const cropOpenAIResult = async (base64Result: string, cropInfo: { x: number, y: 
 
 // --- GEMINI & MAIN LOGIC ---
 
-const detectPeopleCount = async (ai: GoogleGenAI, base64: string, mimeType: string): Promise<number> => {
-  try {
-    const result = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          { inlineData: { data: base64, mimeType } },
-          { text: "How many humans are visible in this image? Return strictly just the integer number. If unsure or 0, return 1." }
-        ]
-      }
-    });
-    const text = result.text;
-    if (text) {
-        const num = parseInt(text.trim());
-        return isNaN(num) ? 1 : num;
-    }
-    return 1;
-  } catch (e) {
-    console.warn("Detection failed, defaulting to 1 person", e);
-    return 1;
-  }
-};
 
 export const generateAIImage = async (base64Source: string, concept: Concept, outputRatio: AspectRatio = '9:16', forceUltraQuality: boolean = false) => {
   try {
     const prompt = concept.prompt;
     const storedSettings = localStorage.getItem('pb_settings');
     let selectedModel = 'gemini-2.5-flash-image';
-    let promptMode = 'wrapped'; 
+    let promptMode = 'wrapped';
 
     if (storedSettings) {
       const parsedSettings: PhotoboothSettings = JSON.parse(storedSettings);
@@ -121,7 +90,10 @@ export const generateAIImage = async (base64Source: string, concept: Concept, ou
 
     if (forceUltraQuality) {
         selectedModel = 'gemini-3-pro-image-preview';
-        console.log("⚡ FORCE ULTRA QUALITY: Using gemini-3-pro-image-preview");
+        console.log("Using gemini-3-pro-image-preview (Ultra Quality)");
+    } else if (selectedModel === 'auto') {
+        selectedModel = 'gemini-2.5-flash-image';
+        console.log("Auto Mode: Using Gemini 2.5 Flash");
     }
 
     // --- SEEDREAM (BYTEPLUS) FLOW ---
@@ -205,15 +177,6 @@ export const generateAIImage = async (base64Source: string, concept: Concept, ou
     const mimeType = base64Source.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
     const cleanBase64 = base64Source.split(',')[1];
 
-    if (selectedModel === 'auto' && !forceUltraQuality) {
-       console.log("Auto Mode: Detecting people count...");
-       const personCount = await detectPeopleCount(ai, cleanBase64, mimeType);
-       if (personCount > 1) {
-          selectedModel = 'gemini-3-pro-image-preview';
-       } else {
-          selectedModel = 'gemini-2.5-flash-image';
-       }
-    }
 
     let apiAspectRatio = '9:16';
     if (outputRatio === '16:9') apiAspectRatio = '16:9';
@@ -259,10 +222,17 @@ Instruction: ${prompt}`;
     };
 
     let response;
+    const timeoutMs = forceUltraQuality ? 90000 : 60000;
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       const usePro = selectedModel.includes('pro') || selectedModel === 'gemini-3-pro-image-preview';
       response = await executeGenAI(usePro ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image', usePro);
     } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new Error(`Request timeout (${timeoutMs}ms). Model ${selectedModel} took too long.`);
+      }
       console.warn(`Model ${selectedModel} failed. Reason:`, err.message);
       if (selectedModel.includes('pro') || forceUltraQuality) {
          console.log("Falling back to gemini-2.5-flash-image...");
@@ -270,6 +240,8 @@ Instruction: ${prompt}`;
       } else {
         throw err;
       }
+    } finally {
+      clearTimeout(timeoutHandle);
     }
 
     const candidates = response.candidates;
